@@ -1,4 +1,10 @@
 # Create your own Chatbot using AWS Bedrock and AWS services
+### What does the future hold for generative AI?
+ - Agents
+ - Multimodal
+ - Multiple Models
+ - Regulations
+         
 
 Inference parameters for foundation models
 ---------------------------------------------
@@ -339,4 +345,213 @@ def chat(messages):
     return output
 
 ```
+Working with Embedding
+----------------------------
+- various ways to calculate vector similarity (Euclidean distance, dot product similarity, cosine similarity)
+- We demonstrate some common use cases of embedding, including search and recommendation, classification, clustering, and outlier detection.
+- We introduce a few ways to store and search vector data, including flat files, **pgvector, OpenSearch Serverless, and Pinecone.**
+- we will use Amazon Titan Embeddings G1 - Text (Embedding) model in the Amazon Bedrock console
+
+#### What is Embedding ?
+---------------------------
+
+The academic definition of embedding is translating high-dimensional vectors into a relatively low-dimensional space. You might know each and every word in this sentence but still have no idea about the whole sentence. We can think of embedding as converting natural language into a sequence of numbers, with the input being a piece of text and the output being a vector. In other words, the vector is a numerical representation of the text, making it easy to perform all kinds of complex computations in AI/ML.
+
+```
+import json
+import boto3
+
+bedrock = boto3.client(
+    service_name='bedrock-runtime'
+)
+
+modelId = 'amazon.titan-embed-text-v1'      # Amazon Titan Embeddings G1 - Text (Embedding) model 
+accept = 'application/json'
+contentType = 'application/json'
+prompt = """
+hello
+"""
+input = {
+        'inputText': prompt
+    }
+body=json.dumps(input)
+response = bedrock.invoke_model(
+    body=body, modelId=modelId, accept=accept,contentType=contentType)
+response_body = json.loads(response.get('body').read())
+embedding = response_body['embedding']
+print(embedding)
+
+```
+With an embedding model, the model translates a piece of text into a fixed length vector. The vector conveys the same message as the original text and can be understood by the model. By using fixed length vectors, it is easier for the model to perform computations.
+
+```
+# Cosine Similarity is another commonly used method to measure similarity. In linear algebra, cosine similarity is the cosine of the angle between two vectors. That is, it is the dot product of the vectors divided by the product of their lengths. Here is the sample code to calculate the cosine similarity between “hello” and “good day”.
+
+import json
+import boto3
+from numpy import dot
+from numpy.linalg import norm
+
+def get_embedding(bedrock, text):
+    modelId = 'amazon.titan-embed-text-v1'
+    accept = 'application/json'
+    contentType = 'application/json'
+    input = {
+            'inputText': text
+        }
+    body=json.dumps(input)
+    response = bedrock.invoke_model(
+        body=body, modelId=modelId, accept=accept,contentType=contentType)
+    response_body = json.loads(response.get('body').read())
+    embedding = response_body['embedding']
+    return embedding
+
+def calculate_cousin_similarity(v1, v2):
+    similarity = dot(v1, v2)/(norm(v1)*norm(v2))
+    return similarity
+
+# main function
+bedrock = boto3.client(
+    service_name='bedrock-runtime'
+)
+text1 = 'hello'
+text2 = 'good day'
+v1 = get_embedding(bedrock, text1)
+v2 = get_embedding(bedrock, text2)
+similarity = calculate_cousin_similarity(v1, v2)
+print(similarity)
+
+```
+#### What is Vector Databases ?
+---------------------------------------
+When you have a large data set with each entry in the data set represented by its embedding, you will need a way to store the data set along with the embedding for efficient search and retrieval. Vector databases are purpose-built database systems specialized in storing and searching vector data.
+
+#### pgvector
+
+PostgreSQL has a pgvector extension for vector similarity search. The advantage of pgvector is most programming language has the library to connect to PostgreSQL. Also, customers can use their favorite SQL client to work with the data during prototyping and troubleshooting.
+
+Amazon RDS for PostgreSQL (version 15.3 or later) supports pgvector.
+
+
+```
+# This will create a table called dataset in the RDS instance.
+import json
+import boto3
+import psycopg2
+from botocore.exceptions import ClientError
+
+def get_secrets():
+    client = boto3.client(
+        service_name='secretsmanager',
+    )
+    try:
+        get_secret_value_response = client.get_secret_value(
+            SecretId=secret_name
+        )
+    except ClientError as e:
+        raise e
+    secrets = json.loads(get_secret_value_response['SecretString'])
+    return secrets
+    
+def load_dataset(filename):
+    dataset = []
+    with open(filename) as file:
+        for line in file:
+            dataset.append(json.loads(line))
+    return dataset
+    
+# main function
+secrets = get_secrets()
+conn = psycopg2.connect(
+    host=secrets['db_hostname'],
+    port=secrets['db_hostport'],
+    user=secrets['db_username'],
+    password=secrets['db_password'],
+    database=secrets['db_database']
+)
+cursor = conn.cursor()
+cursor.execute('CREATE EXTENSION vector')
+cursor.execute('CREATE TABLE dataset (id SERIAL, content TEXT, embedding VECTOR(1536))')
+conn.commit()
+print('Table created.')
+
+```
+```
+# This code loads the dataset we created previously into your database.
+import json
+import boto3
+import psycopg2
+from botocore.exceptions import ClientError
+
+def get_secrets():
+    client = boto3.client(
+        service_name='secretsmanager',
+    )
+    try:
+        get_secret_value_response = client.get_secret_value(
+            SecretId=secret_name
+        )
+    except ClientError as e:
+        raise e
+    secrets = json.loads(get_secret_value_response['SecretString'])
+    return secrets
+    
+def load_dataset(filename):
+    dataset = []
+    with open(filename) as file:
+        for line in file:
+            dataset.append(json.loads(line))
+    return dataset
+    
+# main function
+secrets = get_secrets()
+conn = psycopg2.connect(
+    host=secrets['db_hostname'],
+    port=secrets['db_hostport'],
+    user=secrets['db_username'],
+    password=secrets['db_password'],
+    database=secrets['db_database']
+)
+cursor = conn.cursor()
+# populate the data into the database
+sql = 'INSERT INTO dataset (content, embedding) VALUES(%s, %s)'
+dataset = load_dataset('dataset.json')
+for item in dataset:
+    cursor.execute(sql, (item['text'], item['embedding']))
+conn.commit()
+print('Loaded data into table.')
+
+```
+
+#### OpenSearch Serverless Vector Search
+---------------------------------------------
+Amazon OpenSearch Serverless is an on-demand serverless configuration for Amazon OpenSearch Service. Serverless removes the operational complexities of provisioning, configuring, and tuning your OpenSearch clusters. An OpenSearch Serverless collection is a group of OpenSearch indexes that work together to support a specific workload or use case. Collections are easier to use than self-managed OpenSearch clusters, which require manual provisioning.
+
+#### Pinecone
+-------------------
+ 
+Pinecone is a fully managed vector storage and search service offered by a third-party. You can get a starter account for free for learning and testing purposes. After you register, you get an API key to use in your code.
+
+Retrieval Augmented Generation (RAG)
+----------------------------------------
+Convert the prompt (question text) into embedding.
+(R) Retrieve N most relevant entries from the knowledge base. This is treated as the context of the conversation.
+(A) Augment the prompt with the context by prepending the context to the question text. This end result is the context aware prompt.
+(G) Generate the answer by feeding the context aware prompt to the foundation model.ers:
+
+
+- We will now integrate Retrieval Augmented Generation (RAG) capability into the chatbot.
+
+Knowledge Bases and Agents
+---------------------------
+In the previous secion, we introduce the concept of embedding and demonstrate how the combination of embedding and vector databases makes it possible to perform retrieval augmented generation (RAG). The user still needs to create the vector database, ingest data into the vector databse, retrieve data from the vector database, and construct the prompt to perform RAG. In this section, we demonstrate how Amazon Bedrock natively supports knowledge bases and RAG, making it easier to build applications with RAG capabilities.
+
+#### Agents
+
+FMs are capable of doing various tasks, such as summarization, content generation, etc. However, since foundation models (FMs) are trained on public and historical data, there are limitations on their capabilities. For example, FMs cannot answer questions like "what's the time now", and FMs cannot take actions on your behalf like making online orders. To extend the functionality of AI/ML applications beyond what FMs can do, developers need to build an ecosystem around FMs. Agents greatly help developers simplify these tasks.
+
+Agents for Amazon Bedrock offers the ability to build and configure autonomous agents in AI/ML applications. An agent can complete actions based on organization data and user input. Agents orchestrate interactions between FMs, data sources, software applications, and user conversations. In addition, agents automatically makes API calls to take actions, or invoke knowledge bases to supplement information for these actions.
+
+
+
 
