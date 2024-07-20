@@ -1,0 +1,1 @@
+aws cloudformation create-stack --stack-name bedrock-workshop --capabilities CAPABILITY_NAMED_IAM --template-body file://cf.yml --tags Key=Name,Value=BedrockWorkshop --region <AWS REGION>
