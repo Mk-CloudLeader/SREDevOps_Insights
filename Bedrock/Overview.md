@@ -1,3 +1,5 @@
+# Create your own Chatbot using AWS Bedrock and AWS services
+
 Inference parameters for foundation models
 ---------------------------------------------
 ----------------------------------------------
@@ -57,3 +59,284 @@ The LLM model picks a word from the short list using Temperature.
 The LLM model stops generating the next word when Max Token is achieved.
 If the LLM model generates a stop sequence, the LLM model also stops generating the next word.
 ```
+TOP K
+--------
+Top K is a parameter supported by Anthropic Claude models and Cohere Command models. Top K defines the cut off where the LLM model no longer selects the words. As an over-simplified example, let’s assume that all possible words include {A, B, C, D, E, F, G} and their probabilities are {0.25, 0.20, 0.15, 0.14, 0.13, 0.07, 0.06}. If we set Top K to 50 then the LLM model considers all possible options. If we set Top K to 5 then the LLM model only considers the top 5 possible words {A, B, C, D, E}.
+
+```
+import json
+import boto3
+
+prompt = """
+Describe the color of the sky in less than 10 words.
+"""
+
+model_id = 'anthropic.claude-3-sonnet-20240229-v1:0'
+bedrock = boto3.client(service_name='bedrock-runtime')
+message = {"role": "user", "content": [{"text": prompt}]}
+messages = [message]
+inference_config = {"temperature": 1.0, "topP": 1.0, "maxTokens": 200, "stopSequences": []}      # topP
+additional_model_fields = {"top_k": 200}
+response = bedrock.converse(
+    modelId=model_id,
+    messages=messages,
+    inferenceConfig=inference_config,
+    additionalModelRequestFields=additional_model_fields
+)
+content = response['output']['message']['content']
+for item in content:
+    print(item['text'])
+
+```
+Prompt Engineering Basics
+-----------------------------
+- Zero-Shot Prompting
+- Few-Shot Prompting
+- Chain-of-Thoughts Prompting
+```
+- A response without any examples on the expected response. In prompt engineering, this is referred to as zero-shot prompting.[Ex - above script]
+    - Run this example multiple times with the same model. Each time you get a creative answer. If you are expecting a specific kind of answer, the generated text might not be what you are looking for. Think of this as someone asking you to do something without clear instructions. It is hard to guess what the other person really wants.
+- Few-shot prompting means you ask for a response with a few examples on the expected response. Ex :
+prompt = """
+A dog has 4 legs.
+A sheep has 4 legs.
+A spider
+"""
+- Chain-of-thought (CoT) prompting teaches LLMs to reason through intermediate steps, usually assisted by examples (few-shot prompting).
+ - Assuming that we want to infer the sentiment that is opposite to the sentiment associate with a sentence, we wish to achieve something like the following. This proves to be hard for some models.
+
+2
+3
+4
+5
+6
+prompt = """
+This is awesome! // Negative
+This is bad! // Positive
+Wow that movie was rad! // Negative
+What a horrible show! //
+"""
+
+```
+Conversational Chatbot
+---------------------------
+You are now able to ask a question and receives the generated text. When you ask a follow up question, the generated text seems to be unrelated to the previous question and answer. Each question seems to be treated separately - the foundation models do not seem to remember what has previously been asked and answered.
+
+For foundation models to remember what has been asked and answered, it requires something similar to the concept of a session on the server side. Considering the size of the conversation data, this is something very expensive to offer, especially in a multi-tenant environment.
+
+A workaround is, instead of asking the service to keep the chat history, the customer keeps chat history on the client side. When asking a follow up question, the client sends the chat history as part of the prompt so that the LLM models know what has been talked about.
+
+```
+# Note that this example uses the old InvokeModel API instead of the new Converse API. I intentionally do this to show how "conversation history" looks like in plain text.
+import json
+import boto3
+
+bedrock = boto3.client(service_name='bedrock-runtime')
+model_id = 'ai21.j2-ultra'
+prompt = """
+Human: How are you?
+"""
+input = {
+    'prompt': prompt, 
+    'maxTokens': 1024,
+    'temperature': 1.0,
+    'topP': 1.0,
+    'stopSequences': []
+}
+body = json.dumps(input)
+response = bedrock.invoke_model(body=body, modelId=model_id)    # invoke
+response_body = json.loads(response.get('body').read())
+completions = response_body['completions']
+for part in completions:
+    print(part['data']['text'])
+
+```
+Critical to designing your Conversational Chatbot
+--------------------------------------------------
+Obviously, as the conversation goes on and on, the chat history becomes bigger and bigger. This means the number of tokens in the input text grows over time, making the ongoing conversation more and more expensive. A good chatbot needs to achieve a careful balance between cost and conversation quality. By including only the most recent N dialogs in the prompt, we avoid over spending and the foundation model still produces generated text with good quality.
+
+An important consideration with feeding in previous chat history into the model is the ‘**context size**’. Each foundation model has a defined ‘context size’ which is the maximum number of tokens that a model accepts as the input. This is different depending on the model and can range from 8,000 (Amazon Titan) to 100,000 (Claude V2 100k). You can think of this as the maximum length of an input prompt. In the case of a conversation chatbot, the size of the chat history you feed to the foundation needs to be smaller than the 'context size'.
+
+```
+# In the previous example, we use the InvokeModel API to demonstrate the flow of a conversation, but have to use stop sequences to prevent the model from generating the human part of the conversation.
+
+import json
+import boto3
+
+model_id = 'amazon.titan-text-lite-v1'
+bedrock = boto3.client(service_name='bedrock-runtime')
+messages = [
+    {"role": "user",      "content": [{"text": "How are you?"}]},
+    {"role": "assistant", "content": [{"text": "I am well, thank you for asking! I hope you are well, too."}]},
+    {"role": "user",      "content": [{"text": "I can't find my cat."}]},
+    {"role": "assistant", "content": [{"text": "Did the cat go missing recently?"}]},
+    {"role": "user",      "content": [{"text": "I saw it in the garden yesterday."}]}
+]
+inference_config = {"temperature": 1.0, "topP": 1.0, "maxTokens": 200, "stopSequences": []}   #,maxTokens,stopSquences
+response = bedrock.converse(
+    modelId=model_id,
+    messages=messages,
+    inferenceConfig=inference_config
+)
+content = response['output']['message']['content']
+for item in content:
+    print(item['text'])
+
+```
+Conversational Chatbot
+-------------------------------
+Now we will build a conversation chatbot service, which allows end users to chat with it via a web UI. This is a serverless application with the following workflow:
+
+* The end user makes an HTTP request to an API Gateway.
+* The API Gateway passes the request parameters to a Lambda function.
+* The Lambda function extracts the prompt from the request parameters, invokes a foundation model in Amazon Bedrock.
+* The Lambda function returns the response to API Gateway.
+* API Gateway returns the response to the end user.
+
+
+<img width="800" alt="image" src="https://github.com/user-attachments/assets/79431721-db65-431b-a613-5a94f4134366">
+ 
+ - source :AWS public workshop
+
+The HTML Code
+--------------------
+```
+<HTML>
+    <HEAD>
+        <META http-equiv='Content-Type' content='text/html; charset=UTF-8'>
+        <TITLE>Amazon Bedrock Development Tutorial</TITLE>
+    </HEAD>
+    <BODY>
+        <textarea id="chat_history" name="chat_history" rows="40" cols="120" disabled></textarea>
+        <P>Enter your message below:</P>
+        <textarea id="chat_entry" name="chat_entry" rows="3" cols="100"></textarea>
+        <button type="button" onclick="add()">&nbsp;&nbsp;Send&nbsp;&nbsp;</button> 
+    </BODY>
+<HTML>
+
+<script>
+var chat_depth   = 20;
+var chat_history = [];
+var chat_updated = false;
+var conn_ongoing = false;
+setInterval(doChat, 2000);
+
+function add() {
+    // Get chat entry
+    const msg = document.getElementById("chat_entry").value.trim();
+    // Make sure that it is not empty
+    if (msg !== "") {
+        // This is an entry from human
+        const entry = {"role": "user", "content": [{"text": msg}]};
+        // Add this to the chat history array
+        chat_history.push(entry);
+        chat_updated = true;
+        // Add this to the chat history pane
+        document.getElementById("chat_history").value += "Human: " + msg + "\n";
+    }
+    // Clear out the chat entry
+    document.getElementById("chat_entry").value = "";
+}
+
+function doChat() {
+    // Only connect to the chatbot when there is an update by the user.
+    if (chat_updated) {
+        // Only connect to the chatbot when there is no ongoing connection.
+        if (!conn_ongoing) {
+            // Only work on the last N messages in the chat history
+            var start = 0;
+            if (chat_history.length > chat_depth) {
+                start = chat_history.length - chat_depth;
+            }
+            var messages = [];
+            for (let i = start; i < chat_history.length; i++) {
+                messages.push(chat_history[i]);
+            }
+            
+            // Connect to the chatbot
+            var xhr = new XMLHttpRequest();
+            xhr.open('POST', '/demo', true);
+            xhr.onload = function () {
+                // Extract the chatbot response
+                var msg = this.responseText.trim();
+                var entry = {"role": "assistant", "content": [{"text": msg}]};
+                // Add this to the chat history array
+                chat_history.push(entry);
+                // Add this to the chat history pane
+                document.getElementById("chat_history").value += "Assistant: " + msg + "\n";
+                // Set the conn_ongoing flag to false
+                conn_ongoing = false;
+            };
+            // Set the chat_updated off and conn_ongoing flags on and send the request.
+            chat_updated = false;
+            conn_ongoing = true;
+            xhr.send(JSON.stringify({"messages": messages}));
+        }
+    }
+} 
+</script>
+
+```
+Python File 
+-------------
+```
+# On a high level, this Python script does the following things:
+"""
+- For all GET requests, we load the HTML content from index.html and return it to the requester.
+- For all POST requests, we extract the body from the request, use it as the prompt to invoke a foundation model, then return the response from the foundation model to the requester.
+- For all other requests, we simply return an OK to the requester.
+"""
+
+import os
+import json
+import boto3
+
+model_id = os.environ.get('model_id')
+bedrock = boto3.client(service_name='bedrock-runtime')
+
+def lambda_handler(event, context):
+    if (event['httpMethod'] == 'GET'):
+        output = load_html()
+        return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'text/html'},
+            'body': output
+        }
+    elif (event['httpMethod'] == "POST"):
+        body = json.loads(event['body'])
+        messages = body['messages']
+        print(messages)
+        output = chat(messages)
+        return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'text/html'},
+            'body': output
+        }
+    else:
+         return {
+            'statusCode': 200,
+            'headers': {'Content-Type': 'text/html'},
+            'body': "OK"
+        }
+
+def load_html():
+    html = ''
+    with open('index.html', 'r') as file:
+        html = file.read()
+    return html
+
+def chat(messages):
+    inference_config = {'temperature': 1.0, 'topP': 1.0, 'maxTokens': 1024}
+    response = bedrock.converse(
+        modelId=model_id,
+        messages=messages,
+        inferenceConfig=inference_config
+    )
+    content = response['output']['message']['content']
+    output = ''
+    for item in content:
+        output = output + item['text'] + '\n'
+    return output
+
+```
+
